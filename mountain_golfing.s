@@ -19,20 +19,11 @@
 
 .segment "ZEROPAGE"
 
-scratch:
-	.res 8
-
-current_ppu_addr:
-	.res 2
-
 nmi_counter:
 	.res 1			; Counts DOWN for each NMI.
 
 col_pointer:
 	.res 1			; Which column to update next
-
-row_pointer:
-	.res 1			; Which row to update next
 
 tile_selection:
 	.res 32			; Which tile to use as the ground on each level
@@ -115,24 +106,9 @@ tile_position:
 
 	; Reset the row_pointer
 	ldx #0
-	stx row_pointer
 	stx col_pointer
 
 	jmp runloop
-.endproc
-
-
-; --- Increments the row_pointer with wrap-around
-.proc next_row
-	ldx row_pointer
-	inx
-	cpx #30
-	bcc done
-	ldx #0
-
-	done:
-		stx row_pointer
-		rts
 .endproc
 
 
@@ -150,43 +126,6 @@ tile_position:
 .endproc
 
 
-; --- Computes a nametable address into $00, $01
-;		based on the row-index passed in through X
-.proc compute_ppu_addr
-	lda #$20
-	sta current_ppu_addr
-	lda #$00
-	sta current_ppu_addr + 1
-	:
-		clc
-		lda current_ppu_addr + 1
-		adc #32
-		sta current_ppu_addr + 1
-		lda current_ppu_addr
-		adc #0 						; plus carry
-		sta current_ppu_addr
-		dex
-		bne :-
-	
-	done:
-		rts
-.endproc
-
-
-; --- Set the PPU_ADDR based on current_ppu_addr
-.proc set_ppu_addr
-
-	;bit PPU_STATUS
-	ldx current_ppu_addr
-	stx PPU_ADDR
-	ldx current_ppu_addr + 1
-	stx PPU_ADDR
-	
-	done:
-		rts
-.endproc
-
-
 ; --- Set the PPU_ADDR to the column specified in X
 .proc ppu_addr_X
 	ldy #$20
@@ -195,12 +134,11 @@ tile_position:
 	rts
 .endproc
 
-; --- Write the row specified by row_pointer to PPU_DATA
-.proc write_current_row
-	jsr set_ppu_addr
 
-	ldx #0
-	col:
+; --- Update the column specified by X to PPU_DATA
+.proc update_col_X
+	ldy #0
+	row:
 		tya
 		cmp tile_position, x
 		beq tile
@@ -215,12 +153,9 @@ tile_position:
 			lda #4
 		write_cell:
 			sta PPU_DATA
-		inx
-		cpx #2; $0F; #32
-		bcc col
-
-	; Fix scroll position:
-	ppu_scroll $0, 0
+		iny
+		cpy #30
+		bcc row
 	
 	done:
 		rts
@@ -230,45 +165,20 @@ tile_position:
 ; --- Main runloop
 .proc runloop
 
-	;wait_for_nmi
-	;ldx row_pointer
-	;jsr compute_ppu_addr
-
-	;ldy row_pointer
-	;wait_for_nmi
-	;jsr write_current_row
-	
+	; Load the column into X
 	ldx col_pointer
+	
+	; Wait fo vsync
 	wait_for_nmi
 	bit PPU_STATUS
+
+	; Update PPU address
 	jsr ppu_addr_X
+	; Update nametable column
+	jsr update_col_X
 
-	ldx #0
-	row:
-		txa
-		cmp tile_position, x
-		beq tile
-		bcs ground
-		sky:
-			lda #0
-			jmp write_cell
-		tile:
-			lda tile_selection, x
-			jmp write_cell
-		ground:
-			lda #4
-		write_cell:
-			sta PPU_DATA
-		inx
-		cpx #30
-		bcc row
-
+	; Fix scroll position:
 	ppu_scroll $0, 0
-
-
-	;jsr next_row
-
-	;nmi_delay 60		; 1s delay
 
 	jsr next_column
 
