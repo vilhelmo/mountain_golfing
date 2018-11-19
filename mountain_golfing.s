@@ -19,6 +19,9 @@
 
 .segment "ZEROPAGE"
 
+seed:
+	.res 2			; initialize 16-bit seed to any value except 0
+
 nmi_counter:
 	.res 1			; Counts DOWN for each NMI.
 
@@ -87,6 +90,11 @@ tile_position:
 	;wait_for_nmi
 	; OK, at this point we know the screen is visible, ready, and waiting.
 
+	; Write seed
+	ldx #$BE
+	stx seed
+	ldx #$EF
+	stx seed + 1
 
 	; -- Write values to our tables
 	ldx #0
@@ -104,11 +112,80 @@ tile_position:
 	cpx #32
 	bcc :-
 
+	jsr generate_map
+
 	; Reset the row_pointer
 	ldx #0
 	stx col_pointer
 
 	jmp runloop
+.endproc
+
+
+; prng
+;
+; Returns a random 8-bit number in A (0-255), clobbers X (0).
+;
+; Requires a 2-byte value on the zero page called "seed".
+; Initialize seed to any value except 0 before the first call to prng.
+; (A seed value of 0 will cause prng to always return 0.)
+;
+; This is a 16-bit Galois linear feedback shift register with polynomial $002D.
+; The sequence of numbers it generates will repeat after 65535 calls.
+;
+; Execution time is an average of 125 cycles (excluding jsr and rts)
+.proc prng
+	ldx #8     ; iteration count (generates 8 bits)
+	lda seed+0
+
+	:
+		asl 		; shift the register
+		rol seed+1
+		bcc :+
+		eor #$2D	; apply XOR feedback whenever a 1 bit is shifted out
+	:
+		dex
+		bne :--
+	sta seed+0
+	cmp #0     		; reload flags
+	rts
+.endproc
+
+
+; --- Generate a new map into tile_position, tile_selection
+.proc generate_map
+	
+	jsr prng	; generate a random number into A
+	ldx #$0F	; Previous tile position
+	ldy #0
+	:
+		clc 						; clear the carry bit
+		sbc #85						; subtract 255/3 = 85 = $55
+		bcs down
+		sbc #85						; subtract again
+		bcs up
+
+		flat:
+			lda #1
+			jmp next
+		up:
+			lda #2
+			dex 					; Decrease X to go up TODO: Bounds check
+			jmp next
+		down:
+			lda #3
+			inx 					; Increase X to go down TODO: Bounds check
+		next:
+			sta tile_selection, y 	; Store the tile selection for this column from A
+			stx tile_position, y 	; Store the tile position for this column from X
+			jsr prng				; Generate the next random number into A
+			ldx tile_position, y 	; Restore the previous tile position into X
+		iny
+		cpy #32
+		bcc :-
+
+	rts
+	
 .endproc
 
 
