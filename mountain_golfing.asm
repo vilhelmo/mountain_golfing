@@ -12,15 +12,12 @@
 	.byt "NES",$1A
 	.byt 1 			; 1 x 16kB PRG block
 	.byt 1			; 1 x 8kB CHR block
-	.byt %00000001	; Flags 6 - only enable vertical mirroring
+	.byt %1			; Flags 6 - only enable vertical mirroring
 	; Rest is zero filled
 
 ; === Zero-page RAM ===
 
 .segment "ZEROPAGE"
-
-seed:
-	.res 2			; initialize 16-bit seed to any value except 0
 
 nmi_counter:
 	.res 1			; Counts DOWN for each NMI.
@@ -28,8 +25,15 @@ nmi_counter:
 col_pointer:
 	.res 1			; Which column to update next
 
+scroll:
+	.res 1			; Current scroll position within the current nametable
+
+nametable:
+	.res 1			; Current nametable (0 or 1)
+
 level_pointer:
 	.res 2			; Which level to use next
+	.res 1			; Level index (for now 0-$FF)
 
 tile_selection:
 	.res 32			; Which tile to use as the ground on each level
@@ -69,6 +73,8 @@ tile_position:
 	fill_attribute_table 0
 	fill_attribute_table 1
 
+	jsr setup_data
+
 	enable_vblank_nmi
 
 	; Now wait until nmi_counter increments, to indicate the next VBLANK.
@@ -82,76 +88,52 @@ tile_position:
 	ppu_scroll 0, 0
 
 	; Configure PPU parameters/behaviour/table selection:
-	lda #VBLANK_NMI|BG_0|SPR_1|NT_0|NT_1|VRAM_DOWN
+	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_1
 	sta PPU_CTRL
 
 	; Turn the screen on, by activating background and sprites:
-	lda #BG_ON|SPR_ON
+	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
 	sta PPU_MASK
 
 	; Wait until the screen refreshes.
-	;wait_for_nmi
+	wait_for_nmi
 	; OK, at this point we know the screen is visible, ready, and waiting.
 
-	; Write seed
-	ldx #$BE
-	stx seed
-	ldx #$EF
-	stx seed + 1
 
-	; -- Write values to our tables
-	ldx #0
-	lda #$0F ; Mid screen
-    : 
-    sta tile_position, x
-	inx
-	cpx #32
-	bcc :-
-
-	ldx #0
-	lda #1
-	: sta tile_selection, x
-	inx
-	cpx #32
-	bcc :-
-
-;	jsr generate_map
-
-	; Reset the row_pointer
+	; Reset the col_pointer
 	ldx #0
 	stx col_pointer
+
+	; Reset the scroll and nametable
+	stx scroll
+	ldx #1
+	stx nametable
 
 	; Reset the level pointer to the first level
 	ldx #<levels
 	stx level_pointer
 	ldx #>levels
 	stx level_pointer + 1
+	; Reset the level index
+	ldx #0
+	stx level_pointer + 2
 
-	;TODO Transfer level to zero-page temp storage (from ROM to RAM) so that it can be transferred to vram
-
+	
+	; Load the first level
 	jsr load_next_level
-
-	;ldx #0
-	;ldy #0
-	;:
-		;lda (level_pointer), y
-		;sta tile_position, x
-		;iny 
-;		
-		;lda (level_pointer), y
-		;sta tile_selection, x
-		;iny
-;		
-		;inx
-		;cpx #32
-		;bcc :-
 
 	jmp runloop
 .endproc
 
 
-.proc load_next_level
+.proc setup_data
 
+	done:
+		rts
+.endproc
+
+.proc load_next_level
+	
 	ldx #0
 	ldy #0
 	:
@@ -176,76 +158,11 @@ tile_position:
 	adc #0
 	sta level_pointer + 1
 
-	rts
-
-.endproc
-
-
-
-; prng
-;
-; Returns a random 8-bit number in A (0-255), clobbers X (0).
-;
-; Requires a 2-byte value on the zero page called "seed".
-; Initialize seed to any value except 0 before the first call to prng.
-; (A seed value of 0 will cause prng to always return 0.)
-;
-; This is a 16-bit Galois linear feedback shift register with polynomial $002D.
-; The sequence of numbers it generates will repeat after 65535 calls.
-;
-; Execution time is an average of 125 cycles (excluding jsr and rts)
-.proc prng
-	ldx #8     ; iteration count (generates 8 bits)
-	lda seed+0
-
-	:
-		asl 		; shift the register
-		rol seed+1
-		bcc :+
-		eor #$2D	; apply XOR feedback whenever a 1 bit is shifted out
-	:
-		dex
-		bne :--
-	sta seed+0
-	cmp #0     		; reload flags
-	rts
-.endproc
-
-
-; --- Generate a new map into tile_position, tile_selection
-.proc generate_map
-	
-	jsr prng	; generate a random number into A
-	ldx #$0F	; Previous tile position
-	ldy #0
-	:
-		clc 						; clear the carry bit
-		sbc #85						; subtract 255/3 = 85 = $55
-		bcs down
-		sbc #85						; subtract again
-		bcs up
-
-		flat:
-			lda #1
-			jmp next
-		up:
-			lda #2
-			dex 					; Decrease X to go up TODO: Bounds check
-			jmp next
-		down:
-			lda #3
-			inx 					; Increase X to go down TODO: Bounds check
-		next:
-			sta tile_selection, y 	; Store the tile selection for this column from A
-			stx tile_position, y 	; Store the tile position for this column from X
-			jsr prng				; Generate the next random number into A
-			ldx tile_position, y 	; Restore the previous tile position into X
-		iny
-		cpy #32
-		bcc :-
+	; Update the level index
+	inc level_pointer + 2
 
 	rts
-	
+
 .endproc
 
 
@@ -256,6 +173,8 @@ tile_position:
 	cpx #32
 	bcc done
 	ldx #0
+	; wrapped around; next level
+	inc level_pointer + 2
 
 	done:
 		stx col_pointer
@@ -263,11 +182,51 @@ tile_position:
 .endproc
 
 
-; --- Set the PPU_ADDR to the column specified in X
+; --- Load next column from level data
+.proc load_level_column
+	lda level_pointer + 2
+	cmp #2
+	bcs done
+
+	ldx col_pointer
+	ldy #0
+	
+	lda (level_pointer), y
+	sta tile_position, x
+	iny
+	
+	lda (level_pointer), y
+	sta tile_selection, x
+	iny
+
+	; Increment the level pointer by two (value in Y)
+	clc
+	tya
+	adc level_pointer
+	sta level_pointer
+	lda level_pointer + 1
+	adc #0
+	sta level_pointer + 1
+
+	done:
+		rts
+.endproc
+
+
+; --- Set the PPU_ADDR to the column specified in X and the inverse of the nametable specified in Y
 .proc ppu_addr_X
-	ldy #$20
-	sty PPU_ADDR
-	stx PPU_ADDR
+	bit PPU_STATUS
+	cpy #0
+	beq nt1 			; write to nametable 1 if we're currently in nametable 0
+	nt0:
+		ldy #$20
+		jmp write
+	nt1:
+		ldy #$24
+
+	write:
+		sty PPU_ADDR
+		stx PPU_ADDR
 	rts
 .endproc
 
@@ -299,31 +258,16 @@ tile_position:
 .endproc
 
 
-; --- Update the column specified by Y to PPU_DATA
-.proc update_level_col_Y
-	ldx #0
-	row:
-;		lda (level_pointer), y 		; (address at level_pointer) + y
-		txa
-		cmp (level_pointer), y
-		beq tile
-		bcs ground
-		sky:
-			lda #0
-			jmp write_cell
-		tile:
-			iny
-			lda (level_pointer), y
-			dey
-			jmp write_cell
-		ground:
-			lda #4
-		write_cell:
-			sta PPU_DATA
-		inx
-		cpx #30
-		bcc row
-	
+.proc scroll_right
+	; Scroll right one pixel
+	inc scroll
+	bne done
+
+	; Swap nametable (0 <-> 1)
+	lda nametable
+	eor #$01
+	sta nametable
+
 	done:
 		rts
 .endproc
@@ -332,29 +276,59 @@ tile_position:
 ; --- Main runloop
 .proc runloop
 
-	; Load the column into X
-	ldx col_pointer
-	
-	; Wait fo vsync
-	wait_for_nmi
-	bit PPU_STATUS
-
-	; Update PPU address
-	jsr ppu_addr_X
-	; Update nametable column
-	jsr update_col_X
-
-	; Fix scroll position:
-	ppu_scroll $0, 0
-
-	jsr next_column
-
 	jmp runloop
 .endproc
 
 
+; --- Vsync graphics updates should happen here
+.proc graphics_update
+
+	; Load the current column into X
+	ldx col_pointer
+	; Load the current nametable into Y
+	ldy nametable
+
+	; Update PPU address to the column specified by X
+	; and nametable specified by Y
+	jsr ppu_addr_X
+	
+	; Update data for one column (X) of the nametable
+	jsr update_col_X
+
+	; clean up PPU address registers
+	lda #$00
+  	sta PPU_ADDR
+  	sta PPU_ADDR
+
+	; Set scroll position:
+	ppu_scroll_x scroll
+	
+	; This is the PPU clean up section, so rendering the next frame starts properly.
+	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_0
+	; Select correct nametable for bit 0
+	ora nametable
+	sta PPU_CTRL
+	  
+	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
+	sta PPU_MASK
+	
+	; Load the next slice of level data into the column we just wrote
+	jsr load_level_column
+
+	; Process next column next frame
+	jsr next_column
+
+	; Update scroll for next frame
+	jsr scroll_right
+
+	rts
+.endproc
+
 ; --- NMI handler
 .proc nmi_handler
+	
+	jsr graphics_update
+
 	dec nmi_counter
 	rti
 .endproc

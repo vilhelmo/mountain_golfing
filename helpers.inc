@@ -18,6 +18,13 @@
   .endif
 .endmacro
 
+.macro ppu_scroll_x cx
+	ldx cx
+	stx PPU_SCROLL
+	ldx #0
+	stx PPU_SCROLL	
+.endmacro
+
 .macro ppu_scroll cx, cy
   ; Write X position first:
   ldx #cx
