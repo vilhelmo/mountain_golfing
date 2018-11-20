@@ -28,6 +28,9 @@ nmi_counter:
 col_pointer:
 	.res 1			; Which column to update next
 
+level_pointer:
+	.res 2			; Which level to use next
+
 tile_selection:
 	.res 32			; Which tile to use as the ground on each level
 
@@ -112,14 +115,71 @@ tile_position:
 	cpx #32
 	bcc :-
 
-	jsr generate_map
+;	jsr generate_map
 
 	; Reset the row_pointer
 	ldx #0
 	stx col_pointer
 
+	; Reset the level pointer to the first level
+	ldx #<levels
+	stx level_pointer
+	ldx #>levels
+	stx level_pointer + 1
+
+	;TODO Transfer level to zero-page temp storage (from ROM to RAM) so that it can be transferred to vram
+
+	jsr load_next_level
+
+	;ldx #0
+	;ldy #0
+	;:
+		;lda (level_pointer), y
+		;sta tile_position, x
+		;iny 
+;		
+		;lda (level_pointer), y
+		;sta tile_selection, x
+		;iny
+;		
+		;inx
+		;cpx #32
+		;bcc :-
+
 	jmp runloop
 .endproc
+
+
+.proc load_next_level
+
+	ldx #0
+	ldy #0
+	:
+		lda (level_pointer), y
+		sta tile_position, x
+		iny 
+		
+		lda (level_pointer), y
+		sta tile_selection, x
+		iny
+		
+		inx
+		cpx #32
+		bcc :-
+
+	; Move the level pointer to the next level
+	clc
+	tya
+	adc level_pointer
+	sta level_pointer
+	lda level_pointer + 1
+	adc #0
+	sta level_pointer + 1
+
+	rts
+
+.endproc
+
 
 
 ; prng
@@ -239,6 +299,36 @@ tile_position:
 .endproc
 
 
+; --- Update the column specified by Y to PPU_DATA
+.proc update_level_col_Y
+	ldx #0
+	row:
+;		lda (level_pointer), y 		; (address at level_pointer) + y
+		txa
+		cmp (level_pointer), y
+		beq tile
+		bcs ground
+		sky:
+			lda #0
+			jmp write_cell
+		tile:
+			iny
+			lda (level_pointer), y
+			dey
+			jmp write_cell
+		ground:
+			lda #4
+		write_cell:
+			sta PPU_DATA
+		inx
+		cpx #30
+		bcc row
+	
+	done:
+		rts
+.endproc
+
+
 ; --- Main runloop
 .proc runloop
 
@@ -291,6 +381,8 @@ palette_data:
 	pal $00, $04, $14, $24
 	pal $00, $04, $14, $24
 
+levels:
+	.incbin "levels.bin"
 
 ; === Interrupt vectors ===
 
