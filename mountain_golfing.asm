@@ -22,8 +22,14 @@
 nmi_counter:
 	.res 1			; Counts DOWN for each NMI.
 
+setup_complete:
+	.res 1			; Set to non-zero when setup has completed
+
 col_pointer:
 	.res 1			; Which column to update next
+
+col_ppu_pointer:
+	.res 1			; Which column we've written to the PPU
 
 scroll:
 	.res 1			; Current scroll position within the current nametable
@@ -73,6 +79,8 @@ tile_position:
 	fill_attribute_table 0
 	fill_attribute_table 1
 
+	lda #0
+	sta setup_complete
 	jsr setup_data
 
 	enable_vblank_nmi
@@ -88,39 +96,22 @@ tile_position:
 	ppu_scroll 0, 0
 
 	; Configure PPU parameters/behaviour/table selection:
-	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_1
+	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_0
+	; Select correct nametable for bit 0
+	ora nametable
 	sta PPU_CTRL
+	;lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_1
+	;sta PPU_CTRL
 
 	; Turn the screen on, by activating background and sprites:
 	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
 	sta PPU_MASK
-
+	
+	lda #1
+	sta setup_complete
 	; Wait until the screen refreshes.
 	wait_for_nmi
 	; OK, at this point we know the screen is visible, ready, and waiting.
-
-
-	; Reset the col_pointer
-	ldx #0
-	stx col_pointer
-
-	; Reset the scroll and nametable
-	stx scroll
-	ldx #1
-	stx nametable
-
-	; Reset the level pointer to the first level
-	ldx #<levels
-	stx level_pointer
-	ldx #>levels
-	stx level_pointer + 1
-	; Reset the level index
-	ldx #0
-	stx level_pointer + 2
-
-	
-	; Load the first level
-	jsr load_next_level
 
 	jmp runloop
 .endproc
@@ -128,12 +119,72 @@ tile_position:
 
 .proc setup_data
 
+	; Reset the col_pointer
+	ldx #0
+	stx col_pointer
+	ldx #0
+	stx col_ppu_pointer
+
+	; Reset the scroll
+	;ldx #0
+	ldx #20
+	stx scroll
+	
+	; Reset the current nametable
+	ldx #0
+	stx nametable
+
+	; Reset the level pointer to the first level
+	ldx #<levels
+	stx level_pointer
+	ldx #>levels
+	stx level_pointer + 1
+	; Reset the level index to 0
+	ldx #0
+	stx level_pointer + 2
+
+	; Load the first level into the cache
+	jsr load_full_level
+
+	; Write the first level to the PPU
+	ppu_addr $2000	; write into the first nametable
+	ldy #0
+	row:
+		ldx #0
+		col:
+			tya
+			cmp tile_position, x
+			beq tile
+			bcs ground
+			sky:
+				lda #0
+				jmp write_cell
+			tile:
+				lda tile_selection, x
+				jmp write_cell
+			ground:
+				lda #4
+			write_cell:
+				sta PPU_DATA
+			inx
+			cpx #32
+			bne col
+		iny
+		cpy #30
+		bne row
+
+
+	; Load first column of the next level
+	jsr load_level_column
+
+	; Load the second column of the next level as well
+	jsr load_level_column
+
 	done:
 		rts
 .endproc
 
-.proc load_next_level
-	
+.proc load_full_level
 	ldx #0
 	ldy #0
 	:
@@ -162,12 +213,30 @@ tile_position:
 	inc level_pointer + 2
 
 	rts
+.endproc
 
+
+; --- Increase the value in X, but wrapping around at 32
+; 		The zero bit will be set if wrapping around
+.proc inx_wrap_32
+	inx
+	cpx #32
+	bcc done
+
+	; Wrap around
+	ldx #0
+
+	done:
+		rts
 .endproc
 
 
 ; --- Increment the col_pointer with wrap-around
 .proc next_column
+	;ldx col_pointer
+	;jsr inx_wrap_32
+	;bne done
+
 	ldx col_pointer
 	inx
 	cpx #32
@@ -184,6 +253,7 @@ tile_position:
 
 ; --- Load next column from level data
 .proc load_level_column
+	; We only have 3 levels of data at the moment
 	lda level_pointer + 2
 	cmp #2
 	bcs done
@@ -208,13 +278,20 @@ tile_position:
 	adc #0
 	sta level_pointer + 1
 
+	; Increment the column pointer
+	jsr inx_wrap_32
+	stx col_pointer
+	bne done
+	; Wrapped around, go to next level
+	inc level_pointer + 2
+
 	done:
 		rts
 .endproc
 
 
 ; --- Set the PPU_ADDR to the column specified in X and the inverse of the nametable specified in Y
-.proc ppu_addr_X
+.proc ppu_addr_colX_ntY
 	bit PPU_STATUS
 	cpy #0
 	beq nt1 			; write to nametable 1 if we're currently in nametable 0
@@ -231,8 +308,18 @@ tile_position:
 .endproc
 
 
-; --- Update the column specified by X to PPU_DATA
-.proc update_col_X
+; --- Update the next unwritten column to PPU_DATA
+.proc write_col_ppu
+	ldx col_ppu_pointer
+	; Skip writing if we're caught up
+	cpx col_pointer
+	beq done
+	;bcs done
+
+	ldx col_ppu_pointer
+	ldy nametable
+	jsr ppu_addr_colX_ntY
+
 	ldy #0
 	row:
 		tya
@@ -253,6 +340,9 @@ tile_position:
 		cpy #30
 		bcc row
 	
+	jsr inx_wrap_32
+	stx col_ppu_pointer
+
 	done:
 		rts
 .endproc
@@ -260,6 +350,8 @@ tile_position:
 
 .proc scroll_right
 	; Scroll right one pixel
+	;ldx #20
+	;stx scroll
 	inc scroll
 	bne done
 
@@ -275,8 +367,21 @@ tile_position:
 
 ; --- Main runloop
 .proc runloop
-
+	;ldx #8
+	;scroll:
+	;	jsr scroll_right
+	;	wait_for_nmi
+	;	dex
+	;	bne scroll
+	
+	jsr scroll_right
+	;jsr load_level_column
+	;wait_for_nmi
+	
+	jsr load_level_column
+	wait_for_nmi
 	jmp runloop
+
 .endproc
 
 
@@ -284,16 +389,16 @@ tile_position:
 .proc graphics_update
 
 	; Load the current column into X
-	ldx col_pointer
+	;ldx col_pointer
 	; Load the current nametable into Y
-	ldy nametable
+	;ldy nametable
 
 	; Update PPU address to the column specified by X
 	; and nametable specified by Y
-	jsr ppu_addr_X
+	;jsr ppu_addr_colX_ntY
 	
-	; Update data for one column (X) of the nametable
-	jsr update_col_X
+	; Update data for one column (X) of the nametable if needed
+	jsr write_col_ppu
 
 	; clean up PPU address registers
 	lda #$00
@@ -312,24 +417,18 @@ tile_position:
 	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
 	sta PPU_MASK
 	
-	; Load the next slice of level data into the column we just wrote
-	jsr load_level_column
-
-	; Process next column next frame
-	jsr next_column
-
-	; Update scroll for next frame
-	jsr scroll_right
-
 	rts
 .endproc
 
 ; --- NMI handler
 .proc nmi_handler
-	
+	lda setup_complete
+	cmp #0
+	beq done
 	jsr graphics_update
 
-	dec nmi_counter
+	done:
+		dec nmi_counter
 	rti
 .endproc
 
