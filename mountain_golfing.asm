@@ -37,6 +37,9 @@ scroll:
 nametable:
 	.res 1			; Current nametable (0 or 1)
 
+buttons:
+	.res 8			; Storing data that's read from the controller
+
 level_pointer:
 	.res 2			; Which level to use next
 	.res 1			; Level index (for now 0-$FF)
@@ -126,8 +129,7 @@ tile_position:
 	stx col_ppu_pointer
 
 	; Reset the scroll
-	;ldx #0
-	ldx #20
+	ldx #0
 	stx scroll
 	
 	; Reset the current nametable
@@ -175,16 +177,22 @@ tile_position:
 
 
 	; Load first column of the next level
-	jsr load_level_column
+	;jsr load_level_column
 
 	; Load the second column of the next level as well
-	jsr load_level_column
+	;jsr load_level_column
 
 	done:
 		rts
 .endproc
 
 .proc load_full_level
+	
+	; We only have 3 levels of data at the moment
+	lda level_pointer + 2
+	cmp #3
+	bcs done
+
 	ldx #0
 	ldy #0
 	:
@@ -199,6 +207,10 @@ tile_position:
 		inx
 		cpx #32
 		bcc :-
+	
+	stx col_pointer
+	ldx #0	
+	stx col_ppu_pointer
 
 	; Move the level pointer to the next level
 	clc
@@ -212,7 +224,8 @@ tile_position:
 	; Update the level index
 	inc level_pointer + 2
 
-	rts
+	done:
+		rts
 .endproc
 
 
@@ -340,18 +353,23 @@ tile_position:
 		cpy #30
 		bcc row
 	
-	jsr inx_wrap_32
+	;jsr inx_wrap_32
+	inx
 	stx col_ppu_pointer
 
 	done:
 		rts
 .endproc
 
+.macro wait_for_data_upload
+	ldx col_pointer
+	:
+		cpx col_ppu_pointer
+		bne :-
+.endmacro
 
 .proc scroll_right
 	; Scroll right one pixel
-	;ldx #20
-	;stx scroll
 	inc scroll
 	bne done
 
@@ -364,22 +382,66 @@ tile_position:
 		rts
 .endproc
 
+.macro read_button button_idx
+	lda APU_PAD1
+	and #%00000001
+	sta buttons + button_idx
+.endmacro
+
+
+.proc read_buttons
+	; Latch buttons
+	lda #$01
+	sta APU_PAD1
+	lda #$00
+	sta APU_PAD1
+
+	; A
+	read_button 0
+
+	; B
+	read_button 1
+
+	; Select
+	read_button 2
+	
+	; Start
+	read_button 3
+	
+	; Up
+	read_button 4
+
+	; Down
+	read_button 5
+	
+	; Left
+	read_button 6
+	
+	; Right
+	read_button 7
+
+	rts
+.endproc
 
 ; --- Main runloop
 .proc runloop
-	;ldx #8
-	;scroll:
-	;	jsr scroll_right
-	;	wait_for_nmi
-	;	dex
-	;	bne scroll
+
+	wait:
+		jsr read_buttons
+		lda buttons + 0
+		cmp #1
+		bne wait
 	
-	jsr scroll_right
-	;jsr load_level_column
-	;wait_for_nmi
+	jsr load_full_level
+	wait_for_data_upload
+
+	ldx #0
+	r:
+		jsr scroll_right
+		wait_for_nmi
+		inx
+		bne r
 	
-	jsr load_level_column
-	wait_for_nmi
 	jmp runloop
 
 .endproc
@@ -388,15 +450,6 @@ tile_position:
 ; --- Vsync graphics updates should happen here
 .proc graphics_update
 
-	; Load the current column into X
-	;ldx col_pointer
-	; Load the current nametable into Y
-	;ldy nametable
-
-	; Update PPU address to the column specified by X
-	; and nametable specified by Y
-	;jsr ppu_addr_colX_ntY
-	
 	; Update data for one column (X) of the nametable if needed
 	jsr write_col_ppu
 
@@ -422,12 +475,27 @@ tile_position:
 
 ; --- NMI handler
 .proc nmi_handler
+	; Push registers to the stack
+	pha
+	txa
+	pha
+	tya
+	pha
+	php
+
 	lda setup_complete
 	cmp #0
 	beq done
 	jsr graphics_update
 
 	done:
+		; Restore the registers
+		plp
+		pla
+		tay
+		pla
+		tax
+		pla
 		dec nmi_counter
 	rti
 .endproc
