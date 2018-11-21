@@ -37,6 +37,12 @@ scroll:
 nametable:
 	.res 1			; Current nametable (0 or 1)
 
+ball:
+	.res 4			; Ball position X, Y, followed by ball velocity X, Y
+
+cursor:
+	.res 2			; Cursor position, offset from the ball position
+
 buttons:
 	.res 8			; Storing data that's read from the controller
 
@@ -131,6 +137,17 @@ tile_position:
 	; Reset the scroll
 	ldx #0
 	stx scroll
+
+	; Reset the ball and cursor positions
+	ldx #$7F
+	stx ball
+	stx ball + 1
+	ldx #0
+	stx ball + 2	; Velocity x
+	stx ball + 3	; Velocity y
+	ldx #10		; Cursor offset
+	stx cursor
+	stx cursor + 1
 	
 	; Reset the current nametable
 	ldx #0
@@ -423,14 +440,61 @@ tile_position:
 	rts
 .endproc
 
+
+.macro update_sprites
+	; Update ball position first
+	lda ball + 1	; Y position
+	sta OAM_RAM + 0 ; Ball Y
+	adc cursor + 1
+	sta OAM_RAM + 4 ; Cursor Y
+
+	lda #1		; ball uses sprite 1
+	sta OAM_RAM + 1
+	lda #0		; cursor uses sprite 0
+	sta OAM_RAM + 5
+
+	lda #%00000000 
+	sta OAM_RAM + 2
+	sta OAM_RAM + 6
+
+	lda ball + 0	; Ball X position
+	sta OAM_RAM + 3
+	adc cursor + 0	; Cursor X
+	sta OAM_RAM + 7
+
+.endmacro
+
 ; --- Main runloop
 .proc runloop
-
+	
 	wait:
+		wait_for_nmi
 		jsr read_buttons
-		lda buttons + 0
-		cmp #1
-		bne wait
+		up:
+			lda buttons + 4
+			cmp #1
+			bne down
+			dec cursor + 1
+		down:
+			lda buttons + 5
+			cmp #1
+			bne left
+			inc cursor + 1	
+		left:
+			lda buttons + 6
+			cmp #1
+			bne right
+			dec cursor
+		right:
+			lda buttons + 7
+			cmp #1
+			bne next
+			inc cursor
+		next:
+			update_sprites
+			lda buttons + 0
+			cmp #1
+			bne wait
 	
 	jsr load_full_level
 	wait_for_data_upload
@@ -461,6 +525,8 @@ tile_position:
 	; Set scroll position:
 	ppu_scroll_x scroll
 	
+	trigger_ppu_dma
+
 	; This is the PPU clean up section, so rendering the next frame starts properly.
 	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_0
 	; Select correct nametable for bit 0
