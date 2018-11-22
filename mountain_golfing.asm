@@ -34,8 +34,11 @@ col_ppu_pointer:
 scroll:
 	.res 1			; Current scroll position within the current nametable
 
-nametable:
-	.res 1			; Current nametable (0 or 1)
+col_nametable:
+	.res 1			; Current nametable for writing
+
+scroll_nametable:
+	.res 1			; Current nametable for display
 
 ball:
 	.res 4			; Ball position X, Y, followed by ball velocity X, Y
@@ -49,6 +52,11 @@ buttons:
 level_pointer:
 	.res 2			; Which level to use next
 	.res 1			; Level index (for now 0-$FF)
+	.res 1			; How many tiles wide the level is
+	.res 1			; How many pixels wide the level is
+
+level_size_pointer:
+	.res 2			; pointer to level size data
 
 tile_selection:
 	.res 32			; Which tile to use as the ground on each level
@@ -73,6 +81,11 @@ tile_position:
 	basic_init
 	clear_wram
 	ack_interrupts
+
+	lda #0
+	sta setup_complete
+	jsr setup_data
+
 	init_apu
 	ppu_wakeup
 
@@ -88,9 +101,8 @@ tile_position:
 	fill_attribute_table 0
 	fill_attribute_table 1
 
-	lda #0
-	sta setup_complete
-	jsr setup_data
+	;jsr setup_data
+	jsr setup_graphics
 
 	enable_vblank_nmi
 
@@ -107,7 +119,7 @@ tile_position:
 	; Configure PPU parameters/behaviour/table selection:
 	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_0
 	; Select correct nametable for bit 0
-	ora nametable
+	ora scroll_nametable
 	sta PPU_CTRL
 	;lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_1
 	;sta PPU_CTRL
@@ -127,11 +139,9 @@ tile_position:
 
 
 .proc setup_data
-
 	; Reset the col_pointer
 	ldx #0
 	stx col_pointer
-	ldx #0
 	stx col_ppu_pointer
 
 	; Reset the scroll
@@ -151,8 +161,10 @@ tile_position:
 	
 	; Reset the current nametable
 	ldx #0
-	stx nametable
-
+	stx scroll_nametable
+	ldx #0
+	stx col_nametable
+	
 	; Reset the level pointer to the first level
 	ldx #<levels
 	stx level_pointer
@@ -162,9 +174,19 @@ tile_position:
 	ldx #0
 	stx level_pointer + 2
 
+	ldx #<level_sizes
+	stx level_size_pointer
+	ldx #>level_sizes
+	stx level_size_pointer + 1
+
 	; Load the first level into the cache
 	jsr load_full_level
+	jsr load_first_screen
 
+	rts
+.endproc
+
+.proc setup_graphics
 	; Write the first level to the PPU
 	ppu_addr $2000	; write into the first nametable
 	ldy #0
@@ -186,31 +208,122 @@ tile_position:
 			write_cell:
 				sta PPU_DATA
 			inx
-			cpx #32
+			cpx #32; level_pointer + 3 
 			bne col
 		iny
 		cpy #30
 		bne row
 
+	rts
+.endproc
 
-	; Load first column of the next level
-	;jsr load_level_column
 
-	; Load the second column of the next level as well
-	;jsr load_level_column
+
+.macro add_wrap_32  memory
+	.scope
+	clc
+	adc memory 	; Add the value to A
+	sec		; Set the carry before subtraction
+	sbc #32		; Subtract 32
+	bcs done ;wrap	; If carry is still set then we wrapped around 32 (still positive)
+	; If we wrapped around 32, set carry flag manually
+	; Carry flag was set which meant the value was less than 32
+	; so we need to add 32 back
+	; Carry flag not set anymore, which meant the value was less than 32
+	; so we need to add 32 back
+	;clc
+	adc #32
+	clc
+	;jmp done
+	
+	;wrap:
+	;	sec
+	done:
+	.endscope
+.endmacro
+
+
+; --- Increase the value in X, but wrapping around at 32
+; 		The zero bit, and carry flag will be set if wrapping around
+.macro inx_wrap_32
+	.scope
+	inx
+	cpx #32
+	bcc done
+
+	; Wrap around
+	ldx #0
 
 	done:
-		rts
+	.endscope
+.endmacro
+
+.proc load_first_screen
+
+	ldx col_pointer
+	; Skip next level size, just fill the data
+	ldy #0
+	:
+		lda (level_pointer), y
+		sta tile_position, x
+		iny
+		
+		lda (level_pointer), y
+		sta tile_selection, x
+		iny
+
+		inx
+		cpx #32
+		bcc :-
+
+	stx col_pointer
+
+	; Move the level pointer to the next level
+	clc
+	tya
+	adc level_pointer
+	sta level_pointer
+	lda level_pointer + 1
+	adc #0
+	sta level_pointer + 1
+	
+	rts
+
 .endproc
 
 .proc load_full_level
 	
-	; We only have 3 levels of data at the moment
-	lda level_pointer + 2
-	cmp #3
+	; We only have 4 levels of data at the moment
+	ldy level_pointer + 2
+	cpy #4
 	bcs done
-
-	ldx #0
+	
+	; Store the level size, in tiles
+	;ldy leve
+	lda (level_size_pointer), y
+	iny
+	sta level_pointer + 3
+	
+	; Compute the level width in pixels
+	tax
+	lda #0
+	:
+		adc #8	
+		dex
+		bne :-
+	sta level_pointer + 4
+		
+	; Restore the level size in tiles to A
+	lda level_pointer + 3	
+	; Load the current col_pointer
+	ldx col_pointer
+	
+	; Compute the end column of this level
+	add_wrap_32 col_pointer
+	; Store the next column pointer
+	sta col_pointer
+	
+	
 	ldy #0
 	:
 		lda (level_pointer), y
@@ -221,13 +334,11 @@ tile_position:
 		sta tile_selection, x
 		iny
 		
-		inx
-		cpx #32
-		bcc :-
+		inx_wrap_32
+		cpx col_pointer ;level_pointer + 3; #32
+		bne :-
 	
-	stx col_pointer
-	ldx #0	
-	stx col_ppu_pointer
+	;stx col_pointer
 
 	; Move the level pointer to the next level
 	clc
@@ -245,86 +356,12 @@ tile_position:
 		rts
 .endproc
 
-
-; --- Increase the value in X, but wrapping around at 32
-; 		The zero bit will be set if wrapping around
-.proc inx_wrap_32
-	inx
-	cpx #32
-	bcc done
-
-	; Wrap around
-	ldx #0
-
-	done:
-		rts
-.endproc
-
-
-; --- Increment the col_pointer with wrap-around
-.proc next_column
-	;ldx col_pointer
-	;jsr inx_wrap_32
-	;bne done
-
-	ldx col_pointer
-	inx
-	cpx #32
-	bcc done
-	ldx #0
-	; wrapped around; next level
-	inc level_pointer + 2
-
-	done:
-		stx col_pointer
-		rts
-.endproc
-
-
-; --- Load next column from level data
-.proc load_level_column
-	; We only have 3 levels of data at the moment
-	lda level_pointer + 2
-	cmp #2
-	bcs done
-
-	ldx col_pointer
-	ldy #0
-	
-	lda (level_pointer), y
-	sta tile_position, x
-	iny
-	
-	lda (level_pointer), y
-	sta tile_selection, x
-	iny
-
-	; Increment the level pointer by two (value in Y)
-	clc
-	tya
-	adc level_pointer
-	sta level_pointer
-	lda level_pointer + 1
-	adc #0
-	sta level_pointer + 1
-
-	; Increment the column pointer
-	jsr inx_wrap_32
-	stx col_pointer
-	bne done
-	; Wrapped around, go to next level
-	inc level_pointer + 2
-
-	done:
-		rts
-.endproc
-
-
 ; --- Set the PPU_ADDR to the column specified in X and the inverse of the nametable specified in Y
 .proc ppu_addr_colX_ntY
 	bit PPU_STATUS
 	cpy #0
-	beq nt1 			; write to nametable 1 if we're currently in nametable 0
+	bne nt1
+ 			; write to nametable 1 if we're currently in nametable 0
 	nt0:
 		ldy #$20
 		jmp write
@@ -341,13 +378,16 @@ tile_position:
 ; --- Update the next unwritten column to PPU_DATA
 .proc write_col_ppu
 	ldx col_ppu_pointer
+	; Force update the first frame
+	;cpx #$FF
+	;beq update
+
 	; Skip writing if we're caught up
 	cpx col_pointer
 	beq done
-	;bcs done
 
-	ldx col_ppu_pointer
-	ldy nametable
+	;update:
+	ldy col_nametable
 	jsr ppu_addr_colX_ntY
 
 	ldy #0
@@ -370,10 +410,16 @@ tile_position:
 		cpy #30
 		bcc row
 	
-	;jsr inx_wrap_32
-	inx
-	stx col_ppu_pointer
+	inx_wrap_32
+	bcc finalize
+	
+	; Wrapped around, time to swap nametables (0 <-> 1)
+	lda col_nametable
+	eor #$01
+	sta col_nametable
 
+	finalize:
+		stx col_ppu_pointer
 	done:
 		rts
 .endproc
@@ -391,9 +437,9 @@ tile_position:
 	bne done
 
 	; Swap nametable (0 <-> 1)
-	lda nametable
+	lda scroll_nametable
 	eor #$01
-	sta nametable
+	sta scroll_nametable
 
 	done:
 		rts
@@ -499,11 +545,11 @@ tile_position:
 	jsr load_full_level
 	wait_for_data_upload
 
-	ldx #0
+	ldx level_pointer + 4
 	r:
 		jsr scroll_right
 		wait_for_nmi
-		inx
+		dex
 		bne r
 	
 	jmp runloop
@@ -524,13 +570,14 @@ tile_position:
 
 	; Set scroll position:
 	ppu_scroll_x scroll
-	
+
+	; Update sprites	
 	trigger_ppu_dma
 
 	; This is the PPU clean up section, so rendering the next frame starts properly.
 	lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_0
 	; Select correct nametable for bit 0
-	ora nametable
+	ora scroll_nametable
 	sta PPU_CTRL
 	  
 	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
@@ -590,6 +637,9 @@ palette_data:
 
 levels:
 	.incbin "levels.bin"
+
+level_sizes:
+	.incbin "level_sizes.bin"
 
 ; === Interrupt vectors ===
 
