@@ -107,7 +107,6 @@ tile_position:
 	fill_attribute_table 0
 	fill_attribute_table 1
 
-	;jsr setup_data
 	jsr setup_graphics
 
 	enable_vblank_nmi
@@ -127,8 +126,6 @@ tile_position:
 	; Select correct nametable for bit 0
 	ora scroll_nametable
 	sta PPU_CTRL
-	;lda #VBLANK_NMI|BG_0|SPR_1|VRAM_DOWN|NT_1
-	;sta PPU_CTRL
 
 	; Turn the screen on, by activating background and sprites:
 	lda #BG_ON|SPR_ON|SHOW_BG_LHS|SHOW_SPR_LHS
@@ -241,19 +238,12 @@ tile_position:
 	adc memory 	; Add the value to A
 	sec		; Set the carry before subtraction
 	sbc #32		; Subtract 32
-	bcs done ;wrap	; If carry is still set then we wrapped around 32 (still positive)
-	; If we wrapped around 32, set carry flag manually
-	; Carry flag was set which meant the value was less than 32
-	; so we need to add 32 back
-	; Carry flag not set anymore, which meant the value was less than 32
-	; so we need to add 32 back
-	;clc
+	bcs done	; If carry is still set then we wrapped around 32 (still positive)
+	; Carry not set, so value became negative, or original value was < 32.
+	; Need to add 32 back and clear the carry flag afterwards.
 	adc #32
 	clc
-	;jmp done
 	
-	;wrap:
-	;	sec
 	done:
 	.endscope
 .endmacro
@@ -316,7 +306,6 @@ tile_position:
 	bcs done
 	
 	; Store the level size, in tiles
-	;ldy leve
 	lda (level_size_pointer), y
 	iny
 	sta level_pointer + 3
@@ -355,8 +344,6 @@ tile_position:
 		cpx col_pointer ;level_pointer + 3; #32
 		bne :-
 	
-	;stx col_pointer
-
 	; Move the level pointer to the next level
 	clc
 	tya
@@ -395,15 +382,10 @@ tile_position:
 ; --- Update the next unwritten column to PPU_DATA
 .proc write_col_ppu
 	ldx col_ppu_pointer
-	; Force update the first frame
-	;cpx #$FF
-	;beq update
-
 	; Skip writing if we're caught up
 	cpx col_pointer
 	beq done
 
-	;update:
 	ldy col_nametable
 	jsr ppu_addr_colX_ntY
 
