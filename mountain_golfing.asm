@@ -40,11 +40,17 @@ col_nametable:
 scroll_nametable:
 	.res 1			; Current nametable for display
 
-ball:
-	.res 4			; Ball position X, Y, followed by ball velocity X, Y
+ball_pos:
+	.res 4			; Ball position X(lo/hi), Y(lo/hi)
+
+ball_vel:
+	.res 4			; Ball velocity X(lo/hi), Y(lo/hi)
 
 cursor:
 	.res 2			; Cursor position, offset from the ball position
+
+shot_counter:
+	.res 1			; Keep track of the number of shots made
 
 buttons:
 	.res 8			; Storing data that's read from the controller
@@ -149,20 +155,30 @@ tile_position:
 	stx scroll
 
 	; Reset the ball and cursor positions
-	ldx #$7F
-	stx ball
-	stx ball + 1
 	ldx #0
-	stx ball + 2	; Velocity x
-	stx ball + 3	; Velocity y
-	ldx #10		; Cursor offset
-	stx cursor
-	stx cursor + 1
+	stx ball_pos
+	stx ball_pos + 1
+	stx ball_pos + 2
+	stx ball_pos + 3
+	ldx #0
+	stx ball_vel		; Velocity x low
+	stx ball_vel + 1	; Velocity x high
+	stx ball_vel + 2	; Y low
+	stx ball_vel + 3	; Y high
 	
+	ldx #10			; Cursor offset X
+	stx cursor
+	ldx #$EF		; Cursor offset Y
+	stx cursor + 1
+
+	; Reset the shot counter
+	ldx #0
+	stx shot_counter
+		
 	; Reset the current nametable
 	ldx #0
 	stx scroll_nametable
-	ldx #0
+	ldx #1
 	stx col_nametable
 	
 	; Reset the level pointer to the first level
@@ -276,6 +292,7 @@ tile_position:
 		cpx #32
 		bcc :-
 
+	ldx #0
 	stx col_pointer
 
 	; Move the level pointer to the next level
@@ -489,31 +506,57 @@ tile_position:
 
 .macro update_sprites
 	; Update ball position first
-	lda ball + 1	; Y position
-	sta OAM_RAM + 0 ; Ball Y
+	lda ball_pos + 3	; Y position, high bit
+	sta OAM_RAM + 0 	; Ball Y
 	adc cursor + 1
-	sta OAM_RAM + 4 ; Cursor Y
+	sta OAM_RAM + 4 	; Cursor Y
 
-	lda #1		; ball uses sprite 1
+	lda #1			; ball uses sprite 1
 	sta OAM_RAM + 1
-	lda #0		; cursor uses sprite 0
+	lda #0			; cursor uses sprite 0
 	sta OAM_RAM + 5
 
 	lda #%00000000 
 	sta OAM_RAM + 2
 	sta OAM_RAM + 6
 
-	lda ball + 0	; Ball X position
+	lda ball_pos + 1	; Ball X position, high bit
 	sta OAM_RAM + 3
-	adc cursor + 0	; Cursor X
+	adc cursor + 0		; Cursor X
 	sta OAM_RAM + 7
+.endmacro
 
+.macro physics_step
+	.scope
+	clc
+	lda ball_vel + 2	; Ball Y velocity, low bit
+	; Add gravity
+	adc #10			; ? Figure out good constant
+	sta ball_vel + 2	; Update Y velocity low bit
+	lda ball_vel + 3
+	adc #0
+	sta ball_vel + 3	; Update Y velocity high bit
+	
+	add_eq16 ball_pos + 2, ball_vel + 2
+	
+	add_eq16 ball_pos, ball_vel
+
+	lda #0
+	; Reset if carry flag was set (wrap around screen in X)
+	bcc done
+
+	reset:
+		lda #1
+	done:
+	.endscope
 .endmacro
 
 ; --- Main runloop
 .proc runloop
 	
-	wait:
+	jmp reset_level
+		
+	aim:
 		wait_for_nmi
 		jsr read_buttons
 		up:
@@ -540,19 +583,99 @@ tile_position:
 			update_sprites
 			lda buttons + 0
 			cmp #1
-			bne wait
+			bne aim
 	
-	jsr load_full_level
-	wait_for_data_upload
+	.proc perform_shot
+		inc shot_counter
+		lda cursor + 0
+		tax
+		is_neg
+		bmi neg_x
+		pos_x:
+			txa
+			Repeat 4, lsr
+			sta ball_vel + 1
+			jmp lower_byte_x
+		neg_x:
+			txa
+			eor #$FF
+			Repeat 4, lsr
+			eor #$FF
+			sta ball_vel + 1
+		lower_byte_x:
+			txa
+			Repeat 4, asl
+			sta ball_vel + 0	; Ball velocity X
 
-	ldx level_pointer + 4
-	r:
-		jsr scroll_right
+		lda cursor + 1
+		tax
+		is_neg
+		bmi neg_y
+		pos_y:
+			txa
+			Repeat 4, lsr
+			sta ball_vel + 3
+			jmp lower_byte_y
+		neg_y:
+			txa
+			eor #$FF	; Flip bits
+			Repeat 4, lsr
+			eor #$FF
+			sta ball_vel + 3
+		lower_byte_y:
+			txa
+			Repeat 4, asl
+			sta ball_vel + 2
+	.endproc
+
+	simulate:
+		update_sprites
 		wait_for_nmi
-		dex
-		bne r
+		physics_step
+		cmp #2			; Level complete
+		beq goto_next_level
+		cmp #1			; Level failed
+		beq reset_level
+		jmp simulate		; Continue sim	
 	
-	jmp runloop
+	reset_level:
+		; Reset ball velocty
+		lda #0
+		sta ball_vel + 0
+		sta ball_vel + 1
+		sta ball_vel + 2
+		sta ball_vel + 3
+		; Reset ball position
+		lda #8
+		sta ball_pos + 1	; Reset X pos, high bit
+		lda #0
+		sta ball_pos + 0	; Reset X pos, low bit
+		; Reset position in Y
+		ldy col_pointer
+		iny
+		lda #0
+		ldx #8
+		:
+			adc tile_position, y
+			dex
+			bne :-
+		sta ball_pos + 3	; Reset Y pos, high bit
+		lda #0
+		sta ball_pos + 2	; Reset Y pos, low bit
+		jmp aim
+				
+	goto_next_level:	
+		jsr load_full_level
+		wait_for_data_upload
+
+		ldx level_pointer + 4
+		r:
+			jsr scroll_right
+			wait_for_nmi
+			dex
+			bne r
+	
+	jmp aim
 
 .endproc
 

@@ -1,3 +1,30 @@
+.macro  add_eq16 addr, value_addr
+	.scope
+	clc
+	lda addr
+	adc value_addr
+	sta addr
+	lda addr + 1
+	adc value_addr + 1
+	sta addr + 1
+	.endscope
+.endmacro
+
+.macro  asl16  addr
+	.scope
+	clc
+	lda addr
+	asl
+	sta addr
+	lda addr + 1
+	adc #0
+	sta addr + 1	
+	.endscope
+.endmacro
+
+.macro is_neg
+	and #$80
+.endmacro
 
 ; Load a given 16-bit address into the PPU_ADDR register.
 .macro ppu_addr     Addr
